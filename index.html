@@ -95,12 +95,13 @@
 <body>
 <div class="wrap">
   <h1>Rooftop Runner</h1>
-  <p class="goal">Sprint the neon skyline, grab every coin to clear the roof &mdash; mind the gaps and the bats.</p>
+  <p class="goal">Fill your backpack with the exact secret number of each coin colour to clear the roof &mdash; one too many and you lose the lot. Mind the gaps and the bats.</p>
   <div id="game"></div>
   <div class="legend">
     <span><b>Move</b> <kbd>&larr;</kbd> <kbd>&rarr;</kbd> or <kbd>A</kbd> <kbd>D</kbd></span>
     <span><b>Jump</b> <kbd>Space</kbd> <kbd>&uarr;</kbd> or <kbd>W</kbd></span>
     <span><b>Start / Restart</b> <kbd>Space</kbd></span>
+    <span><b>Backpack</b> each colour has a secret exact target &mdash; over-collect and you lose it all + a life</span>
   </div>
   <div class="touch-controls" id="touchControls">
     <div class="tc-group">
@@ -151,6 +152,8 @@ const CONFIG = {
   BAT_SPEED: 70,          // px/s on level 1 (+15 per level)
 
   COIN_SCORE: 10,
+  COIN_RESPAWN_MS: 3000,      // min time before a collected slot can respawn
+  COIN_RESPAWN_MIN_DIST: 150, // player must be at least this far from a slot for it to respawn there
 
   PX: 3,                  // pixel scale for sprite textures
 };
@@ -217,8 +220,9 @@ const RUNNER_JUMP = [
   "...........",
 ];
 
-// Gold coin -- 8 x 8. Palette: c dark-gold rim, h gold, g pale highlight.
-const COIN = [
+// Four coin shapes -- 8 x 8 each. Palette: c rim, h body, g highlight.
+// Shape (not just colour) tells the types apart for colourblind players too.
+const COIN_ROUND = [
   "..cccc..",
   ".chhhhc.",
   "chhgghhc",
@@ -227,6 +231,36 @@ const COIN = [
   "chhgghhc",
   ".chhhhc.",
   "..cccc..",
+];
+const COIN_DIAMOND = [
+  "...cc...",
+  "..chhc..",
+  ".chgghc.",
+  "chgggghc",
+  "chgggghc",
+  ".chgghc.",
+  "..chhc..",
+  "...cc...",
+];
+const COIN_SQUARE = [
+  "cccccccc",
+  "chhhhhhc",
+  "chgggghc",
+  "chgggghc",
+  "chgggghc",
+  "chgggghc",
+  "chhhhhhc",
+  "cccccccc",
+];
+const COIN_STAR = [
+  "...gg...",
+  ".c.gg.c.",
+  "..chhc..",
+  "gghhhhgg",
+  "gghhhhgg",
+  "..chhc..",
+  ".c.gg.c.",
+  "...gg...",
 ];
 
 // Bat -- 13 x 7. Palette: k body, w eye. Two flap frames.
@@ -268,10 +302,20 @@ const LEDGE = [
 
 const PALETTES = {
   runner: { k:"#1a0a24", h:"#6a2fb5", s:"#ffd9b0", j:"#ff3ea5", p:"#28e0d0", b:"#3a2a5a" },
-  coin:   { c:"#a9781a", h:"#ffcf3f", g:"#fff2b0" },
   bat:    { k:"#241033", w:"#ff4d5e" },
   ledge:  { g:"#48f2c2", d:"#241a3d", w:"#ffd27a" },
 };
+
+/* The four collectible coin types. `target` is the EXACT count of that coin
+   the player must be carrying to win -- never shown in the UI, discoverable
+   only by trial and error. Collecting one more than `target` empties the
+   whole backpack and costs a life. */
+const COIN_TYPES = [
+  { key: "coin_round",   grid: COIN_ROUND,   name: "gold",  palette: { c:"#a9781a", h:"#ffcf3f", g:"#fff2b0" }, target: 3 },
+  { key: "coin_diamond", grid: COIN_DIAMOND, name: "cyan",  palette: { c:"#146b73", h:"#33e8ff", g:"#c8feff" }, target: 5 },
+  { key: "coin_square",  grid: COIN_SQUARE,  name: "pink",  palette: { c:"#7a1150", h:"#ff3ea5", g:"#ffd0ec" }, target: 6 },
+  { key: "coin_star",    grid: COIN_STAR,    name: "green", palette: { c:"#1f5c1f", h:"#6dff6d", g:"#e0ffe0" }, target: 4 },
+];
 
 /* Draw a character-grid into a Phaser canvas texture, one fillRect per pixel. */
 function drawSprite(scene, key, grid, palette) {
@@ -368,10 +412,10 @@ class GameScene extends Phaser.Scene {
     drawSprite(this, "runner_a",    RUNNER_A,    PALETTES.runner);
     drawSprite(this, "runner_b",    RUNNER_B,    PALETTES.runner);
     drawSprite(this, "runner_jump", RUNNER_JUMP, PALETTES.runner);
-    drawSprite(this, "coin",        COIN,        PALETTES.coin);
     drawSprite(this, "bat_a",       BAT_A,       PALETTES.bat);
     drawSprite(this, "bat_b",       BAT_B,       PALETTES.bat);
     drawSprite(this, "ledge",       LEDGE,       PALETTES.ledge);
+    COIN_TYPES.forEach((t) => drawSprite(this, t.key, t.grid, t.palette));
 
     this.anims.create({ key: "run",  frames: [{ key: "runner_a" }, { key: "runner_b" }], frameRate: 9, repeat: -1 });
     this.anims.create({ key: "flap", frames: [{ key: "bat_a" }, { key: "bat_b" }],       frameRate: 7, repeat: -1 });
@@ -428,6 +472,20 @@ class GameScene extends Phaser.Scene {
       fontFamily: "monospace", fontSize: "14px", color: "#ffe9f4",
     }).setDepth(60).setScrollFactor(0).setResolution(2);
 
+    // --- backpack (shows what you've collected -- NEVER the secret target) ---
+    this.add.rectangle(CONFIG.WIDTH / 2, 46, CONFIG.WIDTH, 32, 0x0a0713, 0.55).setDepth(55);
+    this.add.text(12, 38, "BACKPACK", {
+      fontFamily: "monospace", fontSize: "11px", color: "#c9b8e8",
+    }).setDepth(60).setResolution(2);
+    this.backpackTexts = COIN_TYPES.map((t, i) => {
+      const ix = 108 + i * 84;
+      this.add.image(ix, 46, t.key).setDepth(60).setScale(1.3);
+      return this.add.text(ix + 16, 39, "0", {
+        fontFamily: "monospace", fontSize: "15px", color: "#ffe9f4", fontStyle: "bold",
+      }).setDepth(60).setResolution(2);
+    });
+    this.toasts = [];
+
     // --- overlay (title / game over / level clear) ---
     this.ovBg = this.add.rectangle(CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2, CONFIG.WIDTH, CONFIG.HEIGHT, 0x0a0713, 0.78).setDepth(70);
     this.ovTitle = this.add.text(CONFIG.WIDTH / 2, 178, "", {
@@ -462,6 +520,8 @@ class GameScene extends Phaser.Scene {
     this.coins.clear(true, true);
     this.bats.clear(true, true);
     this.player.setAlpha(1);
+    (this.toasts || []).forEach((t) => t.destroy());
+    this.toasts = [];
   }
 
   buildLayout() {
@@ -470,7 +530,7 @@ class GameScene extends Phaser.Scene {
     let x = 8;
     let topY = 410;
     let first = true;
-    let coinCount = 0;
+    const slotDefs = [];   // {x, y, floating} -- positions only, types assigned after
 
     while (x < 770) {
       let w = first ? 132 : Phaser.Math.RND.pick(CONFIG.PLATFORM_WIDTHS);
@@ -490,31 +550,35 @@ class GameScene extends Phaser.Scene {
         this.spawnY = topY - 46;
       }
 
-      // 1-3 coins resting on this rooftop
+      // 1-3 coin slots resting on this rooftop
       const n = Phaser.Math.Between(1, 3);
       for (let i = 0; i < n; i++) {
         const cx = x + (w * (i + 1)) / (n + 1);
-        this.makeCoin(cx, topY - 16, false);
-        coinCount++;
+        slotDefs.push({ x: cx, y: topY - 16, floating: false });
       }
 
       const gap = first
         ? Phaser.Math.Between(56, 92)
         : Phaser.Math.Between(CONFIG.MIN_GAP, CONFIG.MAX_GAP);
 
-      // occasional floating coin arcing over the gap (well within jump reach)
+      // occasional floating coin slot arcing over the gap (well within jump reach)
       if (Math.random() < 0.7) {
         const fx = x + w + gap / 2;
         const fy = Phaser.Math.Clamp(topY - Phaser.Math.Between(28, 52), 120, 440);
-        this.makeCoin(fx, fy, true);
-        coinCount++;
+        slotDefs.push({ x: fx, y: fy, floating: true });
       }
 
       x += w + gap;
       first = false;
     }
 
-    this.coinsLeft = coinCount;
+    // coin slots: fixed positions that get (re)populated with a random type
+    this.coinSlots = slotDefs.map((d) => ({
+      ...d, active: false, collectedAt: -Infinity, sprite: null, typeIndex: -1,
+    }));
+    this.initializeCoinSlots();
+    this.collected = COIN_TYPES.map(() => 0);
+    this.nextRespawnCheck = 0;
 
     // bats: more and faster each level
     const batCount = Math.min(CONFIG.MAX_BATS, CONFIG.BASE_BATS + (this.level - 1));
@@ -549,16 +613,72 @@ class GameScene extends Phaser.Scene {
     return p;
   }
 
-  makeCoin(x, y, floating) {
-    const c = this.coins.create(x, y, "coin").setDepth(6);
+  /* Give every slot a coin at level start, guaranteeing all 4 types appear
+     at least once so the player can always make progress on each colour. */
+  initializeCoinSlots() {
+    const order = Phaser.Utils.Array.Shuffle(this.coinSlots.map((_, i) => i));
+    const guaranteeCount = Math.min(COIN_TYPES.length, order.length);
+    const typesShuffled = Phaser.Utils.Array.Shuffle(COIN_TYPES.map((_, i) => i)).slice(0, guaranteeCount);
+    order.forEach((slotIndex, i) => {
+      const typeIndex = i < guaranteeCount ? typesShuffled[i] : Phaser.Math.Between(0, COIN_TYPES.length - 1);
+      this.spawnCoinAtSlot(slotIndex, typeIndex);
+    });
+  }
+
+  spawnCoinAtSlot(slotIndex, typeIndex) {
+    const slot = this.coinSlots[slotIndex];
+    const type = COIN_TYPES[typeIndex];
+    const c = this.coins.create(slot.x, slot.y, type.key).setDepth(6);
     c.body.setAllowGravity(false);
     c.body.setSize(16, 16, true);
+    c.setData("slotIndex", slotIndex);
+    c.setData("typeIndex", typeIndex);
     // fake the spin by yo-yoing scaleX through zero
     this.tweens.add({ targets: c, scaleX: -1, duration: 520, yoyo: true, repeat: -1, ease: "Sine.InOut" });
-    if (floating) {
-      this.tweens.add({ targets: c, y: y - 8, duration: 900, yoyo: true, repeat: -1, ease: "Sine.InOut" });
+    if (slot.floating) {
+      this.tweens.add({ targets: c, y: slot.y - 8, duration: 900, yoyo: true, repeat: -1, ease: "Sine.InOut" });
     }
+    slot.sprite = c;
+    slot.active = true;
+    slot.typeIndex = typeIndex;
     return c;
+  }
+
+  /* Called every ~500ms while playing. Refills collected slots once the
+     player has moved away, choosing a colour still missing from the board
+     first -- this is the hard guarantee that every colour stays reachable. */
+  tickCoinRespawn() {
+    const activeCounts = COIN_TYPES.map(() => 0);
+    this.coinSlots.forEach((s) => { if (s.active) activeCounts[s.typeIndex]++; });
+    const missingTypes = activeCounts
+      .map((count, i) => (count === 0 ? i : -1))
+      .filter((i) => i >= 0);
+
+    if (missingTypes.length > 0) {
+      const inactive = this.coinSlots.map((s, i) => i).filter((i) => !this.coinSlots[i].active);
+      if (inactive.length > 0) {
+        const slotIndex = Phaser.Utils.Array.GetRandom(inactive);
+        const typeIndex = Phaser.Utils.Array.GetRandom(missingTypes);
+        this.spawnCoinAtSlot(slotIndex, typeIndex);
+        return;
+      }
+    }
+
+    const now = this.time.now;
+    const px = this.player.x, py = this.player.y;
+    const eligible = this.coinSlots
+      .map((s, i) => i)
+      .filter((i) => {
+        const s = this.coinSlots[i];
+        return !s.active
+          && (now - s.collectedAt) >= CONFIG.COIN_RESPAWN_MS
+          && Phaser.Math.Distance.Between(px, py, s.x, s.y) >= CONFIG.COIN_RESPAWN_MIN_DIST;
+      });
+    if (eligible.length === 0) return;
+
+    const slotIndex = Phaser.Utils.Array.GetRandom(eligible);
+    const typeIndex = Phaser.Math.Between(0, COIN_TYPES.length - 1);
+    this.spawnCoinAtSlot(slotIndex, typeIndex);
   }
 
   makeBat(x, y, vx) {
@@ -592,8 +712,22 @@ class GameScene extends Phaser.Scene {
   updateHud() {
     const hearts = "♥".repeat(Math.max(0, this.lives)) || "-";
     this.hud.setText(
-      `SCORE ${this.score}    LVL ${this.level}    LIVES ${hearts}    TIME ${Math.ceil(Math.max(0, this.timeLeft))}    COINS ${this.coinsLeft}`
+      `SCORE ${this.score}    LVL ${this.level}    LIVES ${hearts}    TIME ${Math.ceil(Math.max(0, this.timeLeft))}`
     );
+    if (this.backpackTexts && this.collected) {
+      this.backpackTexts.forEach((t, i) => t.setText(String(this.collected[i])));
+    }
+  }
+
+  showToast(msg) {
+    const t = this.add.text(CONFIG.WIDTH / 2, 84, msg, {
+      fontFamily: "monospace", fontSize: "15px", color: "#ff3ea5", fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(65).setResolution(2).setStroke("#2a0f3a", 4);
+    this.toasts.push(t);
+    this.tweens.add({
+      targets: t, y: 56, alpha: 0, duration: 1500, ease: "Cubic.Out",
+      onComplete: () => { t.destroy(); this.toasts = this.toasts.filter((x) => x !== t); },
+    });
   }
 
   /* ---- state transitions -------------------------------------------------- */
@@ -634,7 +768,8 @@ class GameScene extends Phaser.Scene {
 
   /* ---- damage ---------------------------------------------------------- */
 
-  loseLife(reposition) {
+  loseLife(reposition, clearCoins = false) {
+    if (clearCoins) this.collected = COIN_TYPES.map(() => 0);
     this.lives--;
     this.updateHud();
 
@@ -657,12 +792,34 @@ class GameScene extends Phaser.Scene {
 
   onCoin(player, coin) {
     if (this.gameState !== "playing" || !coin.active) return;
+
+    const slotIndex = coin.getData("slotIndex");
+    const typeIndex = coin.getData("typeIndex");
+    const slot = this.coinSlots[slotIndex];
+
     this.tweens.killTweensOf(coin);
     coin.destroy();
+    slot.sprite = null;
+    slot.active = false;
+    slot.collectedAt = this.time.now;
+
+    const type = COIN_TYPES[typeIndex];
+    const willBe = this.collected[typeIndex] + 1;
+
+    if (willBe > type.target) {
+      // over the secret limit -- the whole backpack is forfeit
+      this.showToast(`Too many ${type.name} coins! Backpack emptied.`);
+      this.loseLife(true, true);
+      return;
+    }
+
+    this.collected[typeIndex] = willBe;
     this.score += CONFIG.COIN_SCORE;
-    this.coinsLeft--;
     this.updateHud();
-    if (this.coinsLeft <= 0) this.levelClear();
+
+    if (COIN_TYPES.every((t, i) => this.collected[i] === t.target)) {
+      this.levelClear();
+    }
   }
 
   onBat(player, bat) {
@@ -709,6 +866,11 @@ class GameScene extends Phaser.Scene {
       this.updateHud();
       this.gameOver();
       return;
+    }
+
+    if (time > this.nextRespawnCheck) {
+      this.nextRespawnCheck = time + 500;
+      this.tickCoinRespawn();
     }
 
     const left  = this.k.left.isDown  || this.k.a.isDown || this.touchLeft;
