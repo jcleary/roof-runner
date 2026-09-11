@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rooftop Runner</title>
+<style>
+  :root {
+    --bg0:#0a0713; --bg1:#150a24; --ink:#ffe9f4; --pink:#ff3ea5; --cyan:#8ff9ff;
+    --dim:#c9b8e8;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background:
+      radial-gradient(1200px 500px at 50% -10%, #2a0f3a 0%, rgba(42,15,58,0) 60%),
+      linear-gradient(180deg, var(--bg0), var(--bg1) 60%, #1c0b2e);
+    color: var(--ink);
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    min-height: 100vh;
+  }
+  .wrap {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 22px 16px 40px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(24px, 5vw, 40px);
+    letter-spacing: 3px;
+    color: var(--pink);
+    text-shadow: 0 0 12px rgba(255,62,165,0.6), 3px 3px 0 #2a0f3a;
+  }
+  .goal { margin: 0; color: var(--cyan); font-size: 14px; text-align: center; }
+  #game {
+    width: 100%;
+    max-width: 800px;
+    aspect-ratio: 8 / 5;
+    border: 2px solid #46265f;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 0 30px rgba(255,62,165,0.25), inset 0 0 40px rgba(0,0,0,0.5);
+    background: #0a0713;
+  }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 8px 18px;
+    justify-content: center;
+    font-size: 12px; color: var(--dim);
+  }
+  .legend b { color: var(--ink); }
+  .legend kbd {
+    background: #241a3d; border: 1px solid #46265f; border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 6px; color: var(--cyan); font-size: 11px;
+  }
+  footer { font-size: 11px; color: #7c6a99; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Rooftop Runner</h1>
+  <p class="goal">Sprint the neon skyline, grab every coin to clear the roof &mdash; mind the gaps and the bats.</p>
+  <div id="game"></div>
+  <div class="legend">
+    <span><b>Move</b> <kbd>&larr;</kbd> <kbd>&rarr;</kbd> or <kbd>A</kbd> <kbd>D</kbd></span>
+    <span><b>Jump</b> <kbd>Space</kbd> <kbd>&uarr;</kbd> or <kbd>W</kbd></span>
+    <span><b>Start / Restart</b> <kbd>Space</kbd></span>
+  </div>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime</footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
+<script>
+/* ============================================================================
+   ROOFTOP RUNNER
+   Single-file browser game. All graphics generated in code (8-bit pixel art).
+   ---------------------------------------------------------------------------
+   TWEAK ME: gameplay constants
+   ========================================================================== */
+const CONFIG = {
+  WIDTH: 800, HEIGHT: 500,
+
+  GRAVITY: 1000,          // px/s^2  downward pull
+  MOVE_SPEED: 215,        // px/s    horizontal run speed
+  JUMP_VELOCITY: 540,     // px/s    upward impulse on jump
+  COYOTE_MS: 100,         // grace window to still jump just after leaving a ledge
+
+  START_TIME: 45,         // seconds on level 1
+  TIME_STEP: 4,           // seconds removed per level
+  MIN_TIME: 22,           // floor for per-level timer
+  TIME_BONUS_PER_SEC: 5,  // score per whole second left when a level is cleared
+
+  LIVES: 3,
+  INVULN_MS: 1600,        // i-frames after a hit / fall
+
+  /* platform generation -- tuned so EVERY jump is reachable.
+     jump apex height = JUMP_VELOCITY^2 / (2*GRAVITY) = 145.8px  (> MAX_STEP)
+     flat-jump horizontal range = MOVE_SPEED * 2*JUMP_VELOCITY/GRAVITY = 232px (> MAX_GAP) */
+  MIN_GAP: 48, MAX_GAP: 118,
+  MAX_STEP: 88,           // max vertical change between neighbouring rooftops
+  MIN_TOP_Y: 250, MAX_TOP_Y: 430,
+  PLATFORM_WIDTHS: [72, 96, 120, 144],
+  TILE_H: 36,             // rooftop thickness (matches ledge texture: 12 rows * PX)
+
+  BASE_BATS: 2,           // bats on level 1
+  MAX_BATS: 6,
+  BAT_SPEED: 70,          // px/s on level 1 (+15 per level)
+
+  COIN_SCORE: 10,
+
+  PX: 3,                  // pixel scale for sprite textures
+};
+
+/* ============================================================================
+   PIXEL-ART SPRITE GRIDS
+   Each grid is an array of equal-length strings. One character = one pixel,
+   mapped through a hex palette. '.' (or any unmapped char) = transparent.
+   ========================================================================== */
+
+// Runner -- 11 x 15. Palette: k outline, h hair, s skin, j jacket, p pants, b boots.
+// Walk cycle frame A (arms out, legs together)
+const RUNNER_A = [
+  "...kkkk....",
+  "..khhhhk...",
+  "..hssshk...",
+  "..kssshk...",
+  "...kssk....",
+  "..jjjjjj...",
+  ".jjjjjjjj..",
+  "sjjjjjjjjs.",
+  ".jjjjjjjj..",
+  "..pppppp...",
+  "..pp..pp...",
+  "..pp..pp...",
+  "..pp..pp...",
+  ".bbk..kbb..",
+  ".bbb..bbb..",
+];
+// Walk cycle frame B (arms tucked, legs striding)
+const RUNNER_B = [
+  "...kkkk....",
+  "..khhhhk...",
+  "..hssshk...",
+  "..kssshk...",
+  "...kssk....",
+  "..jjjjjj...",
+  ".jjjjjjjj..",
+  ".jjjjjjjj..",
+  ".sjjjjjjs..",
+  "...ppppp...",
+  "..pp.ppp...",
+  ".pp...pp...",
+  "bbk....kbb.",
+  "bbb....bbb.",
+  "...........",
+];
+// Jump pose (arms raised, legs tucked)
+const RUNNER_JUMP = [
+  "s........s.",
+  "sk......ks.",
+  ".khhhhk....",
+  ".hssshk....",
+  ".kssshk....",
+  "..kssk.....",
+  ".jjjjjj....",
+  "jjjjjjjj...",
+  "jjjjjjjj...",
+  ".pppppp....",
+  ".pp..pp....",
+  ".bp..pb....",
+  ".bb..bb....",
+  ".bb..bb....",
+  "...........",
+];
+
+// Gold coin -- 8 x 8. Palette: c dark-gold rim, h gold, g pale highlight.
+const COIN = [
+  "..cccc..",
+  ".chhhhc.",
+  "chhgghhc",
+  "chgggghc",
+  "chgggghc",
+  "chhgghhc",
+  ".chhhhc.",
+  "..cccc..",
+];
+
+// Bat -- 13 x 7. Palette: k body, w eye. Two flap frames.
+const BAT_A = [
+  ".k.......k...",
+  "kkk.....kkk..",
+  ".kkkkkkkkkk..",
+  "..kkwkkwkk...",
+  "...kkkkkk....",
+  "....k..k.....",
+  ".............",
+];
+const BAT_B = [
+  ".............",
+  "...k.....k...",
+  ".kkkkkkkkkk..",
+  "kkkkwkkwkkkk.",
+  "..kkkkkkkk...",
+  "...k.k.k.k...",
+  ".............",
+];
+
+// Rooftop ledge tile -- 16 x 12. Palette: g neon top edge, d facade, w lit window.
+// Windows sit clear of the left/right edges so tiles stretch seamlessly.
+const LEDGE = [
+  "gggggggggggggggg",
+  "gggggggggggggggg",
+  "dddddddddddddddd",
+  "ddwwddddddddwwdd",
+  "ddwwddddddddwwdd",
+  "dddddddddddddddd",
+  "dddddddddddddddd",
+  "ddwwddddddddwwdd",
+  "ddwwddddddddwwdd",
+  "dddddddddddddddd",
+  "dddddddddddddddd",
+  "dddddddddddddddd",
+];
+
+const PALETTES = {
+  runner: { k:"#1a0a24", h:"#6a2fb5", s:"#ffd9b0", j:"#ff3ea5", p:"#28e0d0", b:"#3a2a5a" },
+  coin:   { c:"#a9781a", h:"#ffcf3f", g:"#fff2b0" },
+  bat:    { k:"#241033", w:"#ff4d5e" },
+  ledge:  { g:"#48f2c2", d:"#241a3d", w:"#ffd27a" },
+};
+
+/* Draw a character-grid into a Phaser canvas texture, one fillRect per pixel. */
+function drawSprite(scene, key, grid, palette) {
+  const PX = CONFIG.PX;
+  const w = grid[0].length, h = grid.length;
+  const tex = scene.textures.createCanvas(key, w * PX, h * PX);
+  const ctx = tex.getContext();
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const col = palette[grid[y][x]];
+      if (!col) continue;                 // transparent pixel
+      ctx.fillStyle = col;
+      ctx.fillRect(x * PX, y * PX, PX, PX);
+    }
+  }
+  tex.refresh();
+}
+
+/* Paint the night-city background once (gradient sky, stars, moon, skyline). */
+function drawBackground(scene) {
+  const W = CONFIG.WIDTH, H = CONFIG.HEIGHT;
+  const tex = scene.textures.createCanvas("bg", W, H);
+  const ctx = tex.getContext();
+
+  // vertical gradient sky -- synthwave purple into hot-pink horizon
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0.00, "#140b2e");
+  sky.addColorStop(0.45, "#3a1152");
+  sky.addColorStop(0.70, "#7a1e5d");
+  sky.addColorStop(0.86, "#c62368");
+  sky.addColorStop(1.00, "#2a0f3a");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  // scattered stars in the upper sky
+  for (let i = 0; i < 90; i++) {
+    const x = (Math.random() * W) | 0;
+    const y = (Math.random() * H * 0.6) | 0;
+    ctx.globalAlpha = 0.35 + Math.random() * 0.6;
+    ctx.fillStyle = Math.random() < 0.3 ? "#8ff9ff" : "#ffffff";
+    const s = Math.random() < 0.85 ? 1 : 2;
+    ctx.fillRect(x, y, s, s);
+  }
+  ctx.globalAlpha = 1;
+
+  // glowing moon
+  const glow = ctx.createRadialGradient(620, 96, 6, 620, 96, 82);
+  glow.addColorStop(0, "rgba(255,220,240,0.55)");
+  glow.addColorStop(1, "rgba(255,220,240,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(620 - 82, 96 - 82, 164, 164);
+  ctx.fillStyle = "#ffe9f4";
+  ctx.beginPath(); ctx.arc(620, 96, 32, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#f0ccdf";
+  ctx.beginPath(); ctx.arc(610, 87, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(633, 104, 4, 0, Math.PI * 2); ctx.fill();
+
+  // two silhouette skyline layers with lit windows
+  function skyline(baseY, color, maxH, winColor) {
+    let x = -20;
+    while (x < W + 20) {
+      const bw = 28 + Math.random() * 62;
+      const bh = 26 + Math.random() * maxH;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, baseY - bh, bw, bh + 60);
+      for (let wy = baseY - bh + 6; wy < baseY; wy += 10) {
+        for (let wx = x + 5; wx < x + bw - 4; wx += 9) {
+          if (Math.random() < 0.33) {
+            ctx.fillStyle = winColor;
+            ctx.fillRect(wx, wy, 3, 4);
+          }
+        }
+      }
+      x += bw + 6;
+    }
+  }
+  skyline(432, "#1c0f34", 135, "#ffd27a");
+  skyline(474, "#120a24", 95, "#8ff9ff");
+
+  tex.refresh();
+}
+
+/* ============================================================================
+   SCENE
+   ========================================================================== */
+class GameScene extends Phaser.Scene {
+  constructor() { super("game"); }
+
+  create() {
+    const KC = Phaser.Input.Keyboard.KeyCodes;
+
+    // --- build every texture in code ---
+    drawBackground(this);
+    drawSprite(this, "runner_a",    RUNNER_A,    PALETTES.runner);
+    drawSprite(this, "runner_b",    RUNNER_B,    PALETTES.runner);
+    drawSprite(this, "runner_jump", RUNNER_JUMP, PALETTES.runner);
+    drawSprite(this, "coin",        COIN,        PALETTES.coin);
+    drawSprite(this, "bat_a",       BAT_A,       PALETTES.bat);
+    drawSprite(this, "bat_b",       BAT_B,       PALETTES.bat);
+    drawSprite(this, "ledge",       LEDGE,       PALETTES.ledge);
+
+    this.anims.create({ key: "run",  frames: [{ key: "runner_a" }, { key: "runner_b" }], frameRate: 9, repeat: -1 });
+    this.anims.create({ key: "flap", frames: [{ key: "bat_a" }, { key: "bat_b" }],       frameRate: 7, repeat: -1 });
+
+    this.add.image(CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2, "bg").setDepth(-10);
+
+    // --- groups ---
+    this.platforms = this.physics.add.staticGroup();
+    this.coins = this.physics.add.group({ allowGravity: false, immovable: true });
+    this.bats  = this.physics.add.group({ allowGravity: false, immovable: true });
+
+    // --- player ---
+    this.player = this.physics.add.sprite(60, 300, "runner_a").setDepth(10);
+    this.player.body.setSize(16, 40, true);
+    this.player.setMaxVelocity(CONFIG.MOVE_SPEED, 900);
+
+    this.physics.add.collider(this.player, this.platforms);
+    this.physics.add.overlap(this.player, this.coins, this.onCoin, null, this);
+    this.physics.add.overlap(this.player, this.bats,  this.onBat,  null, this);
+
+    // --- input (captured so the page never scrolls) ---
+    this.k = this.input.keyboard.addKeys({
+      left: KC.LEFT, right: KC.RIGHT, up: KC.UP,
+      a: KC.A, d: KC.D, w: KC.W,
+      space: KC.SPACE, enter: KC.ENTER,
+    });
+    this.input.keyboard.addCapture([
+      KC.LEFT, KC.RIGHT, KC.UP, KC.DOWN, KC.SPACE, KC.W, KC.A, KC.S, KC.D,
+    ]);
+
+    // --- HUD ---
+    this.add.rectangle(CONFIG.WIDTH / 2, 16, CONFIG.WIDTH, 26, 0x0a0713, 0.55).setDepth(55);
+    this.hud = this.add.text(12, 8, "", {
+      fontFamily: "monospace", fontSize: "14px", color: "#ffe9f4",
+    }).setDepth(60).setScrollFactor(0).setResolution(2);
+
+    // --- overlay (title / game over / level clear) ---
+    this.ovBg = this.add.rectangle(CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2, CONFIG.WIDTH, CONFIG.HEIGHT, 0x0a0713, 0.78).setDepth(70);
+    this.ovTitle = this.add.text(CONFIG.WIDTH / 2, 178, "", {
+      fontFamily: "monospace", fontSize: "40px", color: "#ff3ea5", fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(71).setResolution(2).setStroke("#2a0f3a", 6);
+    this.ovSub = this.add.text(CONFIG.WIDTH / 2, 244, "", {
+      fontFamily: "monospace", fontSize: "16px", color: "#8ff9ff",
+    }).setOrigin(0.5).setDepth(71).setResolution(2);
+    this.ovHint = this.add.text(CONFIG.WIDTH / 2, 300, "Arrows / A,D to move    Space / Up / W to jump", {
+      fontFamily: "monospace", fontSize: "12px", color: "#c9b8e8",
+    }).setOrigin(0.5).setDepth(71).setResolution(2);
+
+    // --- state ---
+    this.gameState = "ready";   // ready | playing | levelclear | gameover
+    this.score = 0;
+    this.lives = CONFIG.LIVES;
+    this.level = 1;
+    this.timeLeft = CONFIG.START_TIME;
+    this.invulnUntil = 0;
+    this.lastGroundedAt = 0;
+
+    this.buildLayout();
+    this.showOverlay("ROOFTOP RUNNER", "Press SPACE to start");
+    this.updateHud();
+  }
+
+  /* ---- layout generation ------------------------------------------------- */
+
+  clearLayout() {
+    this.tweens.killAll();
+    this.platforms.clear(true, true);
+    this.coins.clear(true, true);
+    this.bats.clear(true, true);
+    this.player.setAlpha(1);
+  }
+
+  buildLayout() {
+    this.clearLayout();
+
+    let x = 8;
+    let topY = 410;
+    let first = true;
+    let coinCount = 0;
+
+    while (x < 770) {
+      let w = first ? 132 : Phaser.Math.RND.pick(CONFIG.PLATFORM_WIDTHS);
+
+      if (!first) {
+        const step = Phaser.Math.Between(-CONFIG.MAX_STEP, CONFIG.MAX_STEP);
+        topY = Phaser.Math.Clamp(topY + step, CONFIG.MIN_TOP_Y, CONFIG.MAX_TOP_Y);
+      } else {
+        topY = 410;
+      }
+      if (x + w > 792) w = Math.max(60, 792 - x);
+
+      this.makePlatform(x, topY, w);
+
+      if (first) {
+        this.spawnX = x + 26;
+        this.spawnY = topY - 46;
+      }
+
+      // 1-3 coins resting on this rooftop
+      const n = Phaser.Math.Between(1, 3);
+      for (let i = 0; i < n; i++) {
+        const cx = x + (w * (i + 1)) / (n + 1);
+        this.makeCoin(cx, topY - 16, false);
+        coinCount++;
+      }
+
+      const gap = first
+        ? Phaser.Math.Between(56, 92)
+        : Phaser.Math.Between(CONFIG.MIN_GAP, CONFIG.MAX_GAP);
+
+      // occasional floating coin arcing over the gap (well within jump reach)
+      if (Math.random() < 0.7) {
+        const fx = x + w + gap / 2;
+        const fy = Phaser.Math.Clamp(topY - Phaser.Math.Between(28, 52), 120, 440);
+        this.makeCoin(fx, fy, true);
+        coinCount++;
+      }
+
+      x += w + gap;
+      first = false;
+    }
+
+    this.coinsLeft = coinCount;
+
+    // bats: more and faster each level
+    const batCount = Math.min(CONFIG.MAX_BATS, CONFIG.BASE_BATS + (this.level - 1));
+    const batSpeed = CONFIG.BAT_SPEED + (this.level - 1) * 15;
+    for (let i = 0; i < batCount; i++) {
+      const dir = Math.random() < 0.5 ? -1 : 1;
+      this.makeBat(
+        Phaser.Math.Between(140, 760),
+        Phaser.Math.Between(110, 300),
+        dir * batSpeed
+      );
+    }
+
+    // park the player on the first rooftop
+    this.player.setPosition(this.spawnX, this.spawnY);
+    this.player.setVelocity(0, 0);
+    this.player.setFlipX(false);
+    this.player.anims.stop();
+    this.player.setTexture("runner_a");
+
+    this.timeLeft = Math.max(CONFIG.MIN_TIME, CONFIG.START_TIME - (this.level - 1) * CONFIG.TIME_STEP);
+    this.invulnUntil = 0;
+  }
+
+  makePlatform(px, topY, w) {
+    const th = CONFIG.TILE_H;
+    const p = this.add.tileSprite(px, topY, w, th, "ledge").setOrigin(0, 0).setDepth(5);
+    this.physics.add.existing(p, true);
+    p.body.setSize(w, th);
+    p.body.updateFromGameObject();
+    this.platforms.add(p);
+    return p;
+  }
+
+  makeCoin(x, y, floating) {
+    const c = this.coins.create(x, y, "coin").setDepth(6);
+    c.body.setAllowGravity(false);
+    c.body.setSize(16, 16, true);
+    // fake the spin by yo-yoing scaleX through zero
+    this.tweens.add({ targets: c, scaleX: -1, duration: 520, yoyo: true, repeat: -1, ease: "Sine.InOut" });
+    if (floating) {
+      this.tweens.add({ targets: c, y: y - 8, duration: 900, yoyo: true, repeat: -1, ease: "Sine.InOut" });
+    }
+    return c;
+  }
+
+  makeBat(x, y, vx) {
+    const b = this.bats.create(x, y, "bat_a").setDepth(8);
+    b.body.setAllowGravity(false);
+    b.body.setSize(30, 14, true);
+    b.setVelocityX(vx);
+    b.anims.play("flap");
+    this.tweens.add({ targets: b, y: y + 16, duration: 1200, yoyo: true, repeat: -1, ease: "Sine.InOut" });
+    return b;
+  }
+
+  /* ---- overlays / hud -------------------------------------------------- */
+
+  showOverlay(title, sub) {
+    this.ovTitle.setText(title);
+    this.ovSub.setText(sub);
+    this.ovBg.setVisible(true);
+    this.ovTitle.setVisible(true);
+    this.ovSub.setVisible(true);
+    this.ovHint.setVisible(this.gameState === "ready");
+  }
+
+  hideOverlay() {
+    this.ovBg.setVisible(false);
+    this.ovTitle.setVisible(false);
+    this.ovSub.setVisible(false);
+    this.ovHint.setVisible(false);
+  }
+
+  updateHud() {
+    const hearts = "♥".repeat(Math.max(0, this.lives)) || "-";
+    this.hud.setText(
+      `SCORE ${this.score}    LVL ${this.level}    LIVES ${hearts}    TIME ${Math.ceil(Math.max(0, this.timeLeft))}    COINS ${this.coinsLeft}`
+    );
+  }
+
+  /* ---- state transitions -------------------------------------------------- */
+
+  startGame() {
+    this.score = 0;
+    this.lives = CONFIG.LIVES;
+    this.level = 1;
+    this.buildLayout();
+    this.gameState = "playing";
+    this.hideOverlay();
+    this.updateHud();
+  }
+
+  nextLevel() {
+    this.level++;
+    this.buildLayout();
+    this.gameState = "playing";
+    this.hideOverlay();
+    this.updateHud();
+  }
+
+  levelClear() {
+    this.gameState = "levelclear";
+    const bonus = Math.floor(Math.max(0, this.timeLeft)) * CONFIG.TIME_BONUS_PER_SEC;
+    this.score += bonus;
+    this.player.setVelocity(0, 0);
+    this.updateHud();
+    this.showOverlay(`LEVEL ${this.level} CLEAR`, `+${bonus} time bonus    SPACE to continue`);
+  }
+
+  gameOver() {
+    this.gameState = "gameover";
+    this.player.setVelocity(0, 0);
+    this.updateHud();
+    this.showOverlay("GAME OVER", `Score ${this.score}    Press SPACE to restart`);
+  }
+
+  /* ---- damage ---------------------------------------------------------- */
+
+  loseLife(reposition) {
+    this.lives--;
+    this.updateHud();
+
+    if (this.lives <= 0) { this.gameOver(); return; }
+
+    this.invulnUntil = this.time.now + CONFIG.INVULN_MS;
+    this.tweens.killTweensOf(this.player);
+    this.player.setAlpha(1);
+    this.tweens.add({
+      targets: this.player, alpha: 0.25, duration: 110, yoyo: true,
+      repeat: Math.floor(CONFIG.INVULN_MS / 220),
+      onComplete: () => this.player.setAlpha(1),
+    });
+
+    if (reposition) {
+      this.player.setPosition(this.spawnX, this.spawnY);
+      this.player.setVelocity(0, 0);
+    }
+  }
+
+  onCoin(player, coin) {
+    if (this.gameState !== "playing" || !coin.active) return;
+    this.tweens.killTweensOf(coin);
+    coin.destroy();
+    this.score += CONFIG.COIN_SCORE;
+    this.coinsLeft--;
+    this.updateHud();
+    if (this.coinsLeft <= 0) this.levelClear();
+  }
+
+  onBat(player, bat) {
+    if (this.gameState !== "playing") return;
+    if (this.time.now < this.invulnUntil) return;
+    this.loseLife(false);
+  }
+
+  /* ---- main loop -------------------------------------------------------- */
+
+  update(time, delta) {
+    const J = Phaser.Input.Keyboard.JustDown;
+    const startPressed = J(this.k.space) || J(this.k.enter) || J(this.k.up) || J(this.k.w);
+
+    // bats always drift + wrap so the title screen has life
+    this.physics.world.wrap(this.bats, 40);
+    this.bats.children.iterate((b) => {
+      if (b) b.setFlipX(b.body.velocity.x < 0);
+    });
+
+    if (this.gameState === "ready") {
+      if (startPressed) this.startGame();
+      return;
+    }
+    if (this.gameState === "gameover") {
+      if (startPressed) this.startGame();
+      return;
+    }
+    if (this.gameState === "levelclear") {
+      if (startPressed) this.nextLevel();
+      return;
+    }
+
+    // ---- playing ----
+    this.timeLeft -= delta / 1000;
+    if (this.timeLeft <= 0) {
+      this.timeLeft = 0;
+      this.updateHud();
+      this.gameOver();
+      return;
+    }
+
+    const left  = this.k.left.isDown  || this.k.a.isDown;
+    const right = this.k.right.isDown || this.k.d.isDown;
+    const jumpPressed = J(this.k.space) || J(this.k.up) || J(this.k.w);
+
+    if (left && !right) {
+      this.player.setVelocityX(-CONFIG.MOVE_SPEED);
+      this.player.setFlipX(true);
+    } else if (right && !left) {
+      this.player.setVelocityX(CONFIG.MOVE_SPEED);
+      this.player.setFlipX(false);
+    } else {
+      this.player.setVelocityX(0);
+    }
+
+    const grounded = this.player.body.blocked.down;
+    if (grounded) this.lastGroundedAt = time;
+    const canJump = grounded || (time - this.lastGroundedAt < CONFIG.COYOTE_MS);
+    if (jumpPressed && canJump) {
+      this.player.setVelocityY(-CONFIG.JUMP_VELOCITY);
+      this.lastGroundedAt = 0;
+    }
+
+    // animation state
+    if (!this.player.body.blocked.down) {
+      this.player.anims.stop();
+      this.player.setTexture("runner_jump");
+    } else if (this.player.body.velocity.x !== 0) {
+      if (this.player.anims.currentAnim?.key !== "run" || !this.player.anims.isPlaying) {
+        this.player.anims.play("run", true);
+      }
+    } else {
+      this.player.anims.stop();
+      this.player.setTexture("runner_a");
+    }
+
+    // keep the runner on-screen horizontally
+    this.player.x = Phaser.Math.Clamp(this.player.x, 12, CONFIG.WIDTH - 12);
+
+    // fell into a gap
+    if (this.player.y > CONFIG.HEIGHT + 60) {
+      this.loseLife(true);
+      this.updateHud();
+      return;
+    }
+
+    this.updateHud();
+  }
+}
+
+/* ============================================================================
+   BOOT
+   ========================================================================== */
+new Phaser.Game({
+  type: Phaser.AUTO,
+  width: CONFIG.WIDTH,
+  height: CONFIG.HEIGHT,
+  pixelArt: true,
+  roundPixels: true,
+  backgroundColor: "#0a0713",
+  scale: {
+    mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+    parent: "game",
+    width: CONFIG.WIDTH,
+    height: CONFIG.HEIGHT,
+  },
+  physics: {
+    default: "arcade",
+    arcade: { gravity: { y: CONFIG.GRAVITY }, debug: false },
+  },
+  scene: [GameScene],
+});
+</script>
+</body>
+</html>
