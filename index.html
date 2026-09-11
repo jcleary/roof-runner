@@ -111,7 +111,7 @@
     <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
     <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
-  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 3</footer>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 4</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
@@ -127,6 +127,7 @@ const CONFIG = {
 
   GRAVITY: 1000,          // px/s^2  downward pull
   MOVE_SPEED: 215,        // px/s    horizontal run speed
+  WRAP_MARGIN: 20,         // px      how far off-screen before wrapping to the other side
   JUMP_VELOCITY: 540,     // px/s    upward impulse on jump
   COYOTE_MS: 100,         // grace window to still jump just after leaving a ledge
 
@@ -1014,8 +1015,8 @@ class GameScene extends Phaser.Scene {
       this.player.setTexture("runner_a");
     }
 
-    // keep the runner on-screen horizontally
-    this.player.x = Phaser.Math.Clamp(this.player.x, 12, CONFIG.WIDTH - 12);
+    // wrap around the sides instead of walking off the edge of the world
+    this.player.x = Phaser.Math.Wrap(this.player.x, -CONFIG.WRAP_MARGIN, CONFIG.WIDTH + CONFIG.WRAP_MARGIN);
 
     // fell into a gap
     if (this.player.y > CONFIG.HEIGHT + 60) {
