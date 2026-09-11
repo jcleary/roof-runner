@@ -111,7 +111,7 @@
     <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
     <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
-  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 2</footer>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 3</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
@@ -135,7 +135,7 @@ const CONFIG = {
   MIN_TIME: 22,           // floor for per-level timer
   TIME_BONUS_PER_SEC: 5,  // score per whole second left when a level is cleared
 
-  LIVES: 3,
+  LIVES: 5,
   INVULN_MS: 1600,        // i-frames after a hit / fall
 
   /* platform generation -- tuned so EVERY jump on the main path is reachable.
@@ -487,16 +487,16 @@ class GameScene extends Phaser.Scene {
     }).setDepth(60).setScrollFactor(0).setResolution(2);
 
     // --- backpack (shows what you've collected -- NEVER the secret target) ---
-    this.add.rectangle(CONFIG.WIDTH / 2, 46, CONFIG.WIDTH, 32, 0x0a0713, 0.55).setDepth(55);
-    this.add.text(12, 38, "BACKPACK", {
+    this.add.rectangle(CONFIG.WIDTH / 2, 50, CONFIG.WIDTH, 42, 0x0a0713, 0.55).setDepth(55);
+    this.add.text(10, 40, "BACKPACK", {
       fontFamily: "monospace", fontSize: "11px", color: "#c9b8e8",
     }).setDepth(60).setResolution(2);
     this.backpackTexts = COIN_TYPES.map((t, i) => {
-      const ix = 108 + i * 84;
-      this.add.image(ix, 46, t.key).setDepth(60).setScale(1.3);
-      return this.add.text(ix + 16, 39, "0", {
-        fontFamily: "monospace", fontSize: "15px", color: "#ffe9f4", fontStyle: "bold",
-      }).setDepth(60).setResolution(2);
+      const ix = 116 + i * 96;
+      this.add.image(ix, 50, t.key).setDepth(60).setScale(1.6);
+      return this.add.text(ix + 20, 40, "0", {
+        fontFamily: "monospace", fontSize: "24px", color: "#ffe9f4", fontStyle: "bold",
+      }).setOrigin(0, 0.5).setDepth(60).setResolution(2);
     });
 
     // --- overlay (title / game over / level clear) ---
@@ -512,15 +512,16 @@ class GameScene extends Phaser.Scene {
     }).setOrigin(0.5).setDepth(71).setResolution(2);
 
     // --- overflow penalty banner (shown for CONFIG.PENALTY_MS when you over-collect) ---
-    this.penaltyLabel1 = this.add.text(CONFIG.WIDTH / 2, 140, "TOO MANY", {
-      fontFamily: "monospace", fontSize: "26px", color: "#ff3ea5", fontStyle: "bold",
+    this.penaltyLabel1 = this.add.text(CONFIG.WIDTH / 2, 116, "SORRY!", {
+      fontFamily: "monospace", fontSize: "28px", color: "#ff3ea5", fontStyle: "bold",
     }).setOrigin(0.5).setDepth(72).setResolution(2).setStroke("#2a0f3a", 5).setVisible(false);
-    this.penaltyIcon = this.add.image(CONFIG.WIDTH / 2, 188, COIN_TYPES[0].key)
-      .setScale(3.2).setDepth(72).setVisible(false);
-    this.penaltyLabel2 = this.add.text(CONFIG.WIDTH / 2, 240, "COLLECTED", {
-      fontFamily: "monospace", fontSize: "26px", color: "#ff3ea5", fontStyle: "bold",
+    this.penaltyIcon = this.add.image(CONFIG.WIDTH / 2, 170, COIN_TYPES[0].key)
+      .setScale(3).setDepth(72).setVisible(false);
+    this.penaltyLabel2 = this.add.text(CONFIG.WIDTH / 2, 232, "", {
+      fontFamily: "monospace", fontSize: "22px", color: "#ff3ea5", fontStyle: "bold", align: "center",
+      lineSpacing: 6,
     }).setOrigin(0.5).setDepth(72).setResolution(2).setStroke("#2a0f3a", 5).setVisible(false);
-    this.penaltySub = this.add.text(CONFIG.WIDTH / 2, 284, "Backpack emptied • life lost", {
+    this.penaltySub = this.add.text(CONFIG.WIDTH / 2, 290, "Backpack emptied • life lost", {
       fontFamily: "monospace", fontSize: "14px", color: "#8ff9ff",
     }).setOrigin(0.5).setDepth(72).setResolution(2).setVisible(false);
 
@@ -844,24 +845,26 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  /* Over-collecting a coin type: empty the backpack, lose a life, freeze
-     play for CONFIG.PENALTY_MS with a banner so the player has time to
-     register which colour and count tripped it, then resume (or game over
-     if that was the last life). */
+  /* Over-collecting a coin type: lose a life and freeze play for
+     CONFIG.PENALTY_MS with a banner revealing that colour's exact max, so
+     the player has time to register it. The backpack itself isn't wiped
+     until the banner clears -- wiping it immediately would hide the very
+     count that just tripped the limit. */
   triggerOverflow(typeIndex) {
     const type = COIN_TYPES[typeIndex];
-    this.collected = COIN_TYPES.map(() => 0);
     this.lives--;
     this.updateHud();
     this.player.setVelocity(0, 0);
 
     if (this.lives <= 0) {
+      this.collected = COIN_TYPES.map(() => 0);
       this.gameOver();
       return;
     }
 
     this.gameState = "penalty";
     this.penaltyIcon.setTexture(type.key);
+    this.penaltyLabel2.setText(`${type.target} IS THE MAX\nNUMBER OF ${type.name.toUpperCase()} COINS`);
     this.ovBg.setVisible(true);
     this.penaltyLabel1.setVisible(true);
     this.penaltyIcon.setVisible(true);
@@ -869,6 +872,9 @@ class GameScene extends Phaser.Scene {
     this.penaltySub.setVisible(true);
 
     this.time.delayedCall(CONFIG.PENALTY_MS, () => {
+      this.collected = COIN_TYPES.map(() => 0);
+      this.updateHud();
+
       this.ovBg.setVisible(false);
       this.penaltyLabel1.setVisible(false);
       this.penaltyIcon.setVisible(false);
