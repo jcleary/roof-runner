@@ -57,6 +57,39 @@
     border-radius: 4px; padding: 1px 6px; color: var(--cyan); font-size: 11px;
   }
   footer { font-size: 11px; color: #7c6a99; margin-top: 6px; }
+
+  /* on-screen touch controls -- hidden on desktop/mouse devices, shown on touch */
+  .touch-controls { display: none; }
+  @media (hover: none) and (pointer: coarse) {
+    .legend { display: none; }
+    .touch-controls {
+      display: flex;
+      width: 100%;
+      max-width: 800px;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .tc-group { display: flex; gap: 10px; }
+    .tc-btn {
+      -webkit-tap-highlight-color: transparent;
+      touch-action: none;
+      user-select: none;
+      width: 64px; height: 64px;
+      border-radius: 12px;
+      border: 2px solid #46265f;
+      border-bottom-width: 4px;
+      background: #241a3d;
+      color: var(--cyan);
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 22px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 0 14px rgba(143,249,255,0.15);
+    }
+    .tc-btn:active { background: #33224f; border-bottom-width: 2px; transform: translateY(2px); }
+    .tc-btn.tc-jump { color: var(--pink); font-size: 13px; width: 78px; }
+    .tc-btn.tc-start { color: var(--pink); font-size: 12px; width: 78px; }
+  }
 </style>
 </head>
 <body>
@@ -68,6 +101,14 @@
     <span><b>Move</b> <kbd>&larr;</kbd> <kbd>&rarr;</kbd> or <kbd>A</kbd> <kbd>D</kbd></span>
     <span><b>Jump</b> <kbd>Space</kbd> <kbd>&uarr;</kbd> or <kbd>W</kbd></span>
     <span><b>Start / Restart</b> <kbd>Space</kbd></span>
+  </div>
+  <div class="touch-controls" id="touchControls">
+    <div class="tc-group">
+      <button type="button" class="tc-btn" id="btnLeft" aria-label="Move left">&larr;</button>
+      <button type="button" class="tc-btn" id="btnRight" aria-label="Move right">&rarr;</button>
+    </div>
+    <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
+    <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
   <footer>Phaser 3 &bull; all art drawn in code at runtime</footer>
 </div>
@@ -361,6 +402,26 @@ class GameScene extends Phaser.Scene {
       KC.LEFT, KC.RIGHT, KC.UP, KC.DOWN, KC.SPACE, KC.W, KC.A, KC.S, KC.D,
     ]);
 
+    // --- on-screen touch controls (mobile) ---
+    this.touchLeft = false;
+    this.touchRight = false;
+    this.touchAction = false;   // queued once, consumed by jump/start same as a key's JustDown
+
+    const bindHold = (id, onDown, onUp) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("pointerdown", (e) => { e.preventDefault(); onDown(); });
+      el.addEventListener("pointerup",   (e) => { e.preventDefault(); onUp(); });
+      el.addEventListener("pointercancel", onUp);
+      el.addEventListener("pointerleave",  onUp);
+    };
+    bindHold("btnLeft",  () => this.touchLeft = true,  () => this.touchLeft = false);
+    bindHold("btnRight", () => this.touchRight = true, () => this.touchRight = false);
+
+    const queueAction = (e) => { e.preventDefault(); this.touchAction = true; };
+    document.getElementById("btnJump")?.addEventListener("pointerdown", queueAction);
+    document.getElementById("btnStart")?.addEventListener("pointerdown", queueAction);
+
     // --- HUD ---
     this.add.rectangle(CONFIG.WIDTH / 2, 16, CONFIG.WIDTH, 26, 0x0a0713, 0.55).setDepth(55);
     this.hud = this.add.text(12, 8, "", {
@@ -614,7 +675,13 @@ class GameScene extends Phaser.Scene {
 
   update(time, delta) {
     const J = Phaser.Input.Keyboard.JustDown;
-    const startPressed = J(this.k.space) || J(this.k.enter) || J(this.k.up) || J(this.k.w);
+    // JustDown() consumes the key's "just pressed" flag on first read, so each
+    // key must be polled exactly once per frame -- cache results and reuse them
+    // below instead of calling JustDown() again for the same key.
+    const spaceJD = J(this.k.space), enterJD = J(this.k.enter), upJD = J(this.k.up), wJD = J(this.k.w);
+    const touchActionJD = this.touchAction;
+    this.touchAction = false;
+    const startPressed = spaceJD || enterJD || upJD || wJD || touchActionJD;
 
     // bats always drift + wrap so the title screen has life
     this.physics.world.wrap(this.bats, 40);
@@ -644,9 +711,9 @@ class GameScene extends Phaser.Scene {
       return;
     }
 
-    const left  = this.k.left.isDown  || this.k.a.isDown;
-    const right = this.k.right.isDown || this.k.d.isDown;
-    const jumpPressed = J(this.k.space) || J(this.k.up) || J(this.k.w);
+    const left  = this.k.left.isDown  || this.k.a.isDown || this.touchLeft;
+    const right = this.k.right.isDown || this.k.d.isDown || this.touchRight;
+    const jumpPressed = spaceJD || upJD || wJD || touchActionJD;
 
     if (left && !right) {
       this.player.setVelocityX(-CONFIG.MOVE_SPEED);
