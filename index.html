@@ -111,7 +111,7 @@
     <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
     <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
-  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 9</footer>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 10</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
@@ -1025,15 +1025,25 @@ class PuzzleScene extends Phaser.Scene {
     }
     grid.strokePath();
 
-    // target squares -- middle of the room, numbers 1-4 left to right
+    // the outer ring of cells is a player-only buffer -- boxes can never be
+    // pushed into it, so there's always room to walk around behind a box
+    // even after it's been pushed flush against what used to be a dead end
+    this.add.rectangle(
+      this.originX + (this.cols * this.cell) / 2,
+      this.originY + (this.rows * this.cell) / 2,
+      (this.cols - 2) * this.cell, (this.rows - 2) * this.cell
+    ).setStrokeStyle(1, 0x3a2a5a, 0.8).setDepth(1);
+
+    // target squares -- middle of the room. Which number belongs on which
+    // square is a fixed secret (not shown) -- solving is trial and error via
+    // the green lights, and the full order is revealed as an "unlock code"
+    // once every square is correctly filled.
     const targetRow = 3, targetStartCol = 3;
-    this.targets = [1, 2, 3, 4].map((num, i) => {
+    const secretOrder = [2, 4, 1, 3];
+    this.targets = secretOrder.map((num, i) => {
       const row = targetRow, col = targetStartCol + i;
       const cx = this.cellCenterX(col), cy = this.cellCenterY(row);
       this.add.rectangle(cx, cy, this.cell - 8, this.cell - 8, 0x241a3d).setStrokeStyle(2, 0x48f2c2).setDepth(2);
-      this.add.text(cx, cy, String(num), {
-        fontFamily: "monospace", fontSize: "26px", color: "#8ff9ff", fontStyle: "bold",
-      }).setOrigin(0.5).setDepth(3).setResolution(2);
       const light = this.add.circle(cx, cy + this.cell * 0.58, 8, 0x333048).setStrokeStyle(2, 0x1a0a24).setDepth(3);
       return { num, row, col, light, solved: false };
     });
@@ -1073,17 +1083,20 @@ class PuzzleScene extends Phaser.Scene {
     this.add.text(12, 8, `SCORE ${this.carriedScore}`, {
       fontFamily: "monospace", fontSize: "14px", color: "#ffe9f4",
     }).setDepth(60).setResolution(2);
-    this.add.text(CONFIG.WIDTH / 2, 8, "LEVEL 2 -- PUSH THE BOXES INTO ORDER", {
+    this.add.text(CONFIG.WIDTH / 2, 8, "LEVEL 2 -- CRACK THE SECRET BOX ORDER", {
       fontFamily: "monospace", fontSize: "13px", color: "#8ff9ff", fontStyle: "bold",
     }).setOrigin(0.5, 0).setDepth(60).setResolution(2);
 
     // win overlay
     this.ovBg = this.add.rectangle(CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2, CONFIG.WIDTH, CONFIG.HEIGHT, 0x0a0713, 0.82)
       .setDepth(70).setVisible(false);
-    this.ovTitle = this.add.text(CONFIG.WIDTH / 2, 220, "LEVEL 2 COMPLETE", {
+    this.ovTitle = this.add.text(CONFIG.WIDTH / 2, 175, "LEVEL 2 COMPLETE", {
       fontFamily: "monospace", fontSize: "36px", color: "#ff3ea5", fontStyle: "bold",
     }).setOrigin(0.5).setDepth(71).setResolution(2).setStroke("#2a0f3a", 6).setVisible(false);
-    this.ovSub = this.add.text(CONFIG.WIDTH / 2, 280, "You win! Press any move key to play again", {
+    this.ovCode = this.add.text(CONFIG.WIDTH / 2, 225, "", {
+      fontFamily: "monospace", fontSize: "24px", color: "#ffcf3f", fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(71).setResolution(2).setStroke("#2a0f3a", 5).setVisible(false);
+    this.ovSub = this.add.text(CONFIG.WIDTH / 2, 265, "Press any move key to play again", {
       fontFamily: "monospace", fontSize: "16px", color: "#8ff9ff",
     }).setOrigin(0.5).setDepth(71).setResolution(2).setVisible(false);
   }
@@ -1092,7 +1105,11 @@ class PuzzleScene extends Phaser.Scene {
   cellCenterY(row) { return this.originY + row * this.cell + this.cell / 2; }
 
   boxAt(row, col) { return this.boxes.find((b) => b.row === row && b.col === col); }
-  inBounds(row, col) { return row >= 0 && row < this.rows && col >= 0 && col < this.cols; }
+  // the player can walk the whole grid, including the outer buffer ring...
+  inPlayerBounds(row, col) { return row >= 0 && row < this.rows && col >= 0 && col < this.cols; }
+  // ...but a box can only ever occupy the inner room, never that ring, so
+  // there's always a way to walk around and push a box back from any wall
+  inBoxBounds(row, col) { return row >= 1 && row < this.rows - 1 && col >= 1 && col < this.cols - 1; }
 
   update() {
     const J = Phaser.Input.Keyboard.JustDown;
@@ -1120,12 +1137,12 @@ class PuzzleScene extends Phaser.Scene {
 
   tryMove(dr, dc) {
     const nr = this.playerCell.row + dr, nc = this.playerCell.col + dc;
-    if (!this.inBounds(nr, nc)) return;
+    if (!this.inPlayerBounds(nr, nc)) return;
 
     const box = this.boxAt(nr, nc);
     if (box) {
       const br = nr + dr, bc = nc + dc;
-      if (!this.inBounds(br, bc) || this.boxAt(br, bc)) return; // push blocked
+      if (!this.inBoxBounds(br, bc) || this.boxAt(br, bc)) return; // push blocked
 
       this.moving = true;
       box.row = br; box.col = bc;
@@ -1169,8 +1186,11 @@ class PuzzleScene extends Phaser.Scene {
 
   onSolved() {
     this.solved = true;
+    const code = this.targets.map((t) => t.num).join("");
+    this.ovCode.setText(`The unlock code is ${code}`);
     this.ovBg.setVisible(true);
     this.ovTitle.setVisible(true);
+    this.ovCode.setVisible(true);
     this.ovSub.setVisible(true);
   }
 }
