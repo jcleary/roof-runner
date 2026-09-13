@@ -111,7 +111,7 @@
     <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
     <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
-  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 5</footer>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 6</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
@@ -171,7 +171,7 @@ const CONFIG = {
   BAT_SPEED: 70,          // px/s on level 1 (+15 per level)
 
   COIN_SCORE: 10,
-  COIN_RESPAWN_MS: 3000,      // min time before a collected slot can respawn
+  COIN_RESPAWN_MS: 6000,      // min time before a collected slot can respawn
   COIN_RESPAWN_MIN_DIST: 150, // player must be at least this far from a slot for it to respawn there
 
   PENALTY_MS: 2500,       // freeze time after over-collecting, so the player can read the warning
@@ -729,8 +729,13 @@ class GameScene extends Phaser.Scene {
   }
 
   /* Called every ~500ms while playing. Refills collected slots once the
-     player has moved away, choosing a colour still missing from the board
-     first -- this is the hard guarantee that every colour stays reachable. */
+     player has moved away AND the cooldown has passed, choosing a colour
+     still missing from the board first -- this is the hard guarantee that
+     every colour stays reachable. Distance/cooldown are only ever relaxed
+     as a last resort (and cooldown before distance), never both at once
+     unless there's truly no other option -- otherwise a coin could pop
+     back up right under the player the instant they collect the last one
+     of its colour, letting them accidentally re-collect it in one step. */
   tickCoinRespawn() {
     const activeCounts = COIN_TYPES.map(() => 0);
     this.coinSlots.forEach((s) => { if (s.active) activeCounts[s.typeIndex]++; });
@@ -738,30 +743,33 @@ class GameScene extends Phaser.Scene {
       .map((count, i) => (count === 0 ? i : -1))
       .filter((i) => i >= 0);
 
-    if (missingTypes.length > 0) {
-      const inactive = this.coinSlots.map((s, i) => i).filter((i) => !this.coinSlots[i].active);
-      if (inactive.length > 0) {
-        const slotIndex = Phaser.Utils.Array.GetRandom(inactive);
-        const typeIndex = Phaser.Utils.Array.GetRandom(missingTypes);
-        this.spawnCoinAtSlot(slotIndex, typeIndex);
-        return;
-      }
-    }
-
     const now = this.time.now;
     const px = this.player.x, py = this.player.y;
-    const eligible = this.coinSlots
-      .map((s, i) => i)
-      .filter((i) => {
-        const s = this.coinSlots[i];
-        return !s.active
-          && (now - s.collectedAt) >= CONFIG.COIN_RESPAWN_MS
-          && Phaser.Math.Distance.Between(px, py, s.x, s.y) >= CONFIG.COIN_RESPAWN_MIN_DIST;
-      });
-    if (eligible.length === 0) return;
+    const isCooled = (s) => !s.active && (now - s.collectedAt) >= CONFIG.COIN_RESPAWN_MS;
+    const isFarEnough = (s) => Phaser.Math.Distance.Between(px, py, s.x, s.y) >= CONFIG.COIN_RESPAWN_MIN_DIST;
+    const indices = this.coinSlots.map((_, i) => i);
 
-    const slotIndex = Phaser.Utils.Array.GetRandom(eligible);
-    const typeIndex = Phaser.Math.Between(0, COIN_TYPES.length - 1);
+    const eligible = indices.filter((i) => isCooled(this.coinSlots[i]) && isFarEnough(this.coinSlots[i]));
+    if (eligible.length > 0) {
+      const slotIndex = Phaser.Utils.Array.GetRandom(eligible);
+      const typeIndex = missingTypes.length > 0
+        ? Phaser.Utils.Array.GetRandom(missingTypes)
+        : Phaser.Math.Between(0, COIN_TYPES.length - 1);
+      this.spawnCoinAtSlot(slotIndex, typeIndex);
+      return;
+    }
+
+    // No slot is both cooled down and far from the player. Only spawn
+    // anyway if a colour is completely missing from the board, and even
+    // then prefer a cooled-down slot over a totally fresh one.
+    if (missingTypes.length === 0) return;
+
+    const cooled = indices.filter((i) => isCooled(this.coinSlots[i]));
+    const pool = cooled.length > 0 ? cooled : indices.filter((i) => !this.coinSlots[i].active);
+    if (pool.length === 0) return;
+
+    const slotIndex = Phaser.Utils.Array.GetRandom(pool);
+    const typeIndex = Phaser.Utils.Array.GetRandom(missingTypes);
     this.spawnCoinAtSlot(slotIndex, typeIndex);
   }
 
