@@ -111,7 +111,7 @@
     <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
     <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
-  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 8</footer>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 9</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
@@ -469,6 +469,17 @@ class GameScene extends Phaser.Scene {
       KC.LEFT, KC.RIGHT, KC.UP, KC.DOWN, KC.SPACE, KC.W, KC.A, KC.S, KC.D,
     ]);
 
+    // --- debug shortcut: type "level2" anywhere in this scene to jump
+    // straight to the level 2 puzzle, for testing without clearing level 1 ---
+    this.cheatBuffer = "";
+    this.input.keyboard.on("keydown", (event) => {
+      if (event.key.length !== 1) return;
+      this.cheatBuffer = (this.cheatBuffer + event.key.toLowerCase()).slice(-6);
+      if (this.cheatBuffer === "level2") {
+        this.scene.start("puzzle", { score: this.score });
+      }
+    });
+
     // --- on-screen touch controls (mobile) ---
     this.touchLeft = false;
     this.touchRight = false;
@@ -749,21 +760,13 @@ class GameScene extends Phaser.Scene {
     this.updateHud();
   }
 
-  nextLevel() {
-    this.level++;
-    this.buildLayout();
-    this.gameState = "playing";
-    this.hideOverlay();
-    this.updateHud();
-  }
-
   levelClear() {
     this.gameState = "levelclear";
     const bonus = Math.floor(Math.max(0, this.timeLeft)) * CONFIG.TIME_BONUS_PER_SEC;
     this.score += bonus;
     this.player.setVelocity(0, 0);
     this.updateHud();
-    this.showOverlay(`LEVEL ${this.level} CLEAR`, `+${bonus} time bonus    SPACE to continue`);
+    this.showOverlay("LEVEL 1 COMPLETE", `+${bonus} time bonus    SPACE to continue`);
   }
 
   gameOver() {
@@ -910,7 +913,7 @@ class GameScene extends Phaser.Scene {
       return;
     }
     if (this.gameState === "levelclear") {
-      if (startPressed) this.nextLevel();
+      if (startPressed) this.scene.start("puzzle", { score: this.score });
       return;
     }
     if (this.gameState === "penalty") {
@@ -981,6 +984,198 @@ class GameScene extends Phaser.Scene {
 }
 
 /* ============================================================================
+   LEVEL 2 -- BOX-SORTING PUZZLE
+   Overhead view. Push the four numbered boxes onto the matching target
+   squares (1-4, left to right) to clear the level. Grid-based movement,
+   no Arcade Physics bodies -- position and collision are just plain data.
+   ========================================================================== */
+class PuzzleScene extends Phaser.Scene {
+  constructor() { super("puzzle"); }
+
+  init(data) {
+    this.carriedScore = (data && data.score) || 0;
+  }
+
+  create() {
+    const KC = Phaser.Input.Keyboard.KeyCodes;
+
+    this.cols = 10;
+    this.rows = 6;
+    this.cell = 70;
+    this.originX = (CONFIG.WIDTH - this.cols * this.cell) / 2;
+    this.originY = 80;
+
+    this.add.rectangle(CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2, CONFIG.WIDTH, CONFIG.HEIGHT, 0x0a0713).setDepth(-10);
+
+    // floor + grid lines
+    this.add.rectangle(
+      this.originX + (this.cols * this.cell) / 2,
+      this.originY + (this.rows * this.cell) / 2,
+      this.cols * this.cell, this.rows * this.cell, 0x1c1030
+    ).setStrokeStyle(2, 0x46265f).setDepth(0);
+    const grid = this.add.graphics().setDepth(1);
+    grid.lineStyle(1, 0x2a1a45, 0.6);
+    for (let c = 1; c < this.cols; c++) {
+      grid.moveTo(this.originX + c * this.cell, this.originY);
+      grid.lineTo(this.originX + c * this.cell, this.originY + this.rows * this.cell);
+    }
+    for (let r = 1; r < this.rows; r++) {
+      grid.moveTo(this.originX, this.originY + r * this.cell);
+      grid.lineTo(this.originX + this.cols * this.cell, this.originY + r * this.cell);
+    }
+    grid.strokePath();
+
+    // target squares -- middle of the room, numbers 1-4 left to right
+    const targetRow = 3, targetStartCol = 3;
+    this.targets = [1, 2, 3, 4].map((num, i) => {
+      const row = targetRow, col = targetStartCol + i;
+      const cx = this.cellCenterX(col), cy = this.cellCenterY(row);
+      this.add.rectangle(cx, cy, this.cell - 8, this.cell - 8, 0x241a3d).setStrokeStyle(2, 0x48f2c2).setDepth(2);
+      this.add.text(cx, cy, String(num), {
+        fontFamily: "monospace", fontSize: "26px", color: "#8ff9ff", fontStyle: "bold",
+      }).setOrigin(0.5).setDepth(3).setResolution(2);
+      const light = this.add.circle(cx, cy + this.cell * 0.58, 8, 0x333048).setStrokeStyle(2, 0x1a0a24).setDepth(3);
+      return { num, row, col, light, solved: false };
+    });
+
+    // boxes -- a few rows above the targets, deliberately out of order
+    const startOrder = [3, 1, 4, 2];
+    this.boxes = startOrder.map((num, i) => {
+      const row = 1, col = targetStartCol + i;
+      const cx = this.cellCenterX(col), cy = this.cellCenterY(row);
+      const c = this.add.container(cx, cy).setDepth(5);
+      const img = this.add.rectangle(0, 0, this.cell - 14, this.cell - 14, 0xffcf3f).setStrokeStyle(3, 0xa9781a);
+      const label = this.add.text(0, 0, String(num), {
+        fontFamily: "monospace", fontSize: "24px", color: "#1a0a24", fontStyle: "bold",
+      }).setOrigin(0.5).setResolution(2);
+      c.add([img, label]);
+      return { num, row, col, obj: c };
+    });
+
+    // player
+    this.playerCell = { row: 1, col: 1 };
+    this.playerObj = this.add.circle(
+      this.cellCenterX(this.playerCell.col), this.cellCenterY(this.playerCell.row),
+      this.cell * 0.28, 0xff3ea5
+    ).setStrokeStyle(2, 0x2a0f3a).setDepth(6);
+
+    // input
+    this.k = this.input.keyboard.addKeys({
+      left: KC.LEFT, right: KC.RIGHT, up: KC.UP, down: KC.DOWN,
+      a: KC.A, d: KC.D, w: KC.W, s: KC.S,
+    });
+    this.input.keyboard.addCapture([KC.LEFT, KC.RIGHT, KC.UP, KC.DOWN, KC.W, KC.A, KC.S, KC.D]);
+    this.moving = false;
+    this.solved = false;
+
+    // HUD
+    this.add.rectangle(CONFIG.WIDTH / 2, 16, CONFIG.WIDTH, 26, 0x0a0713, 0.55).setDepth(55);
+    this.add.text(12, 8, `SCORE ${this.carriedScore}`, {
+      fontFamily: "monospace", fontSize: "14px", color: "#ffe9f4",
+    }).setDepth(60).setResolution(2);
+    this.add.text(CONFIG.WIDTH / 2, 8, "LEVEL 2 -- PUSH THE BOXES INTO ORDER", {
+      fontFamily: "monospace", fontSize: "13px", color: "#8ff9ff", fontStyle: "bold",
+    }).setOrigin(0.5, 0).setDepth(60).setResolution(2);
+
+    // win overlay
+    this.ovBg = this.add.rectangle(CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2, CONFIG.WIDTH, CONFIG.HEIGHT, 0x0a0713, 0.82)
+      .setDepth(70).setVisible(false);
+    this.ovTitle = this.add.text(CONFIG.WIDTH / 2, 220, "LEVEL 2 COMPLETE", {
+      fontFamily: "monospace", fontSize: "36px", color: "#ff3ea5", fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(71).setResolution(2).setStroke("#2a0f3a", 6).setVisible(false);
+    this.ovSub = this.add.text(CONFIG.WIDTH / 2, 280, "You win! Press any move key to play again", {
+      fontFamily: "monospace", fontSize: "16px", color: "#8ff9ff",
+    }).setOrigin(0.5).setDepth(71).setResolution(2).setVisible(false);
+  }
+
+  cellCenterX(col) { return this.originX + col * this.cell + this.cell / 2; }
+  cellCenterY(row) { return this.originY + row * this.cell + this.cell / 2; }
+
+  boxAt(row, col) { return this.boxes.find((b) => b.row === row && b.col === col); }
+  inBounds(row, col) { return row >= 0 && row < this.rows && col >= 0 && col < this.cols; }
+
+  update() {
+    const J = Phaser.Input.Keyboard.JustDown;
+
+    if (this.solved) {
+      if (J(this.k.left) || J(this.k.right) || J(this.k.up) || J(this.k.down)
+          || J(this.k.a) || J(this.k.d) || J(this.k.w) || J(this.k.s)) {
+        this.scene.start("game");
+      }
+      return;
+    }
+
+    if (this.moving) return;
+
+    let dr = 0, dc = 0;
+    if (this.k.left.isDown || this.k.a.isDown) dc = -1;
+    else if (this.k.right.isDown || this.k.d.isDown) dc = 1;
+    else if (this.k.up.isDown || this.k.w.isDown) dr = -1;
+    else if (this.k.down.isDown || this.k.s.isDown) dr = 1;
+
+    if (dr === 0 && dc === 0) return;
+
+    this.tryMove(dr, dc);
+  }
+
+  tryMove(dr, dc) {
+    const nr = this.playerCell.row + dr, nc = this.playerCell.col + dc;
+    if (!this.inBounds(nr, nc)) return;
+
+    const box = this.boxAt(nr, nc);
+    if (box) {
+      const br = nr + dr, bc = nc + dc;
+      if (!this.inBounds(br, bc) || this.boxAt(br, bc)) return; // push blocked
+
+      this.moving = true;
+      box.row = br; box.col = bc;
+      this.playerCell = { row: nr, col: nc };
+      this.tweens.add({
+        targets: box.obj, x: this.cellCenterX(bc), y: this.cellCenterY(br),
+        duration: 140, ease: "Quad.Out",
+      });
+      this.tweens.add({
+        targets: this.playerObj, x: this.cellCenterX(nc), y: this.cellCenterY(nr),
+        duration: 140, ease: "Quad.Out",
+        onComplete: () => { this.moving = false; this.recomputeTargets(); },
+      });
+    } else {
+      this.moving = true;
+      this.playerCell = { row: nr, col: nc };
+      this.tweens.add({
+        targets: this.playerObj, x: this.cellCenterX(nc), y: this.cellCenterY(nr),
+        duration: 140, ease: "Quad.Out",
+        onComplete: () => { this.moving = false; },
+      });
+    }
+  }
+
+  /* Recomputed fresh from scratch every time a box moves -- correctly lights
+     a target up when the right box lands on it, and turns it back off if
+     that box gets pushed away again. */
+  recomputeTargets() {
+    let solvedCount = 0;
+    this.targets.forEach((t) => {
+      const box = this.boxAt(t.row, t.col);
+      const correct = !!box && box.num === t.num;
+      if (correct !== t.solved) {
+        t.solved = correct;
+        t.light.setFillStyle(correct ? 0x6dff6d : 0x333048);
+      }
+      if (correct) solvedCount++;
+    });
+    if (solvedCount === this.targets.length) this.onSolved();
+  }
+
+  onSolved() {
+    this.solved = true;
+    this.ovBg.setVisible(true);
+    this.ovTitle.setVisible(true);
+    this.ovSub.setVisible(true);
+  }
+}
+
+/* ============================================================================
    BOOT
    ========================================================================== */
 new Phaser.Game({
@@ -1001,7 +1196,7 @@ new Phaser.Game({
     default: "arcade",
     arcade: { gravity: { y: CONFIG.GRAVITY }, debug: false },
   },
-  scene: [GameScene],
+  scene: [GameScene, PuzzleScene],
 });
 </script>
 </body>
