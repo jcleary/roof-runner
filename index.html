@@ -111,7 +111,7 @@
     <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
     <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
-  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 6</footer>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 7</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
@@ -139,32 +139,13 @@ const CONFIG = {
   LIVES: 5,
   INVULN_MS: 1600,        // i-frames after a hit / fall
 
-  /* platform generation -- tuned so EVERY jump on the main path is reachable.
-     jump apex height = JUMP_VELOCITY^2 / (2*GRAVITY) = 145.8px  (> MAX_STEP)
-     flat-jump horizontal range = MOVE_SPEED * 2*JUMP_VELOCITY/GRAVITY = 232px (> MAX_GAP)
-     All platforms are one-way: jump up through them from below, land on top
-     from above, walk off an edge to drop onto whatever's underneath. */
-  MIN_GAP: 48, MAX_GAP: 118,
-  MAX_STEP: 88,           // max vertical change between neighbouring rooftops
-  MIN_TOP_Y: 250, MAX_TOP_Y: 430,
-  PLATFORM_WIDTHS: [72, 96, 120, 144],
+  /* Platforms are one-way (jump up through from below, land on top from
+     above, walk off an edge to drop onto whatever's underneath) and now use
+     a fixed, hand-authored layout -- see LEVEL_LAYOUT below -- rather than
+     being generated. For reference when hand-editing that layout:
+     jump apex height = JUMP_VELOCITY^2 / (2*GRAVITY) = 145.8px
+     flat-jump horizontal range = MOVE_SPEED * 2*JUMP_VELOCITY/GRAVITY = 232px */
   TILE_H: 36,             // rooftop thickness (matches ledge texture: 12 rows * PX)
-
-  // bonus platforms stacked above/below the main path -- purely optional
-  // detours, each reachable from the main-path platform it's attached to.
-  // Two independent tries per side roughly doubles the old satellite count,
-  // which (added to the unchanged main path) works out to ~50% more platforms.
-  SAT_TRIES_PER_SIDE: 2,
-  SAT_ABOVE_CHANCE: 0.5,  // per try, chance of a platform stacked above
-  SAT_BELOW_CHANCE: 0.45, // per try, chance of a platform stacked below
-  SAT_ABOVE_MIN: 60, SAT_ABOVE_MAX: 120,  // rise, well under the 145.8px jump apex
-  SAT_BELOW_MIN: 70, SAT_BELOW_MAX: 150,  // drop -- any fall is safe, just walk off
-  SAT_ABOVE_WIDTHS: [56, 72, 88],   // shorter than the main path so they don't overhang
-  SAT_ABOVE_JITTER: 30,   // above satellites stay centred close over their base...
-  SAT_BELOW_JITTER: 50,   // ...below satellites can drift a bit further sideways
-  SAT_MIN_TOP_Y: 90,      // never place a platform above this (clear of the HUD)
-  SAT_MAX_TOP_Y: 460,     // never place a platform below this (clear of the death zone)
-  PLATFORM_MARGIN_X: 6, PLATFORM_MARGIN_Y: 18, // min clearance kept between any two platforms
 
   BASE_BATS: 2,           // bats on level 1
   MAX_BATS: 6,
@@ -336,6 +317,26 @@ const COIN_TYPES = [
   { key: "coin_diamond", grid: COIN_DIAMOND, name: "cyan",  palette: { c:"#146b73", h:"#33e8ff", g:"#c8feff" }, target: 5 },
   { key: "coin_square",  grid: COIN_SQUARE,  name: "pink",  palette: { c:"#7a1150", h:"#ff3ea5", g:"#ffd0ec" }, target: 6 },
   { key: "coin_star",    grid: COIN_STAR,    name: "green", palette: { c:"#1f5c1f", h:"#6dff6d", g:"#e0ffe0" }, target: 4 },
+];
+
+/* Fixed, hand-authored rooftop layout (from a player-drawn sketch), replacing
+   the old random generator. Each entry is one platform: x/y (top-left, game
+   pixels)/w, plus `coins`, a list of fractional positions (0-1 along its
+   width) where a coin slot sits -- matching the circles drawn on each line
+   in the sketch. The one platform with no coins (the lone line in the
+   drawing) is the player's spawn point. Every jump between adjacent
+   platforms was checked against the apex/range numbers above, so nudge
+   heights/gaps with the same limits in mind if you edit this by hand. */
+const LEVEL_LAYOUT = [
+  { x: 20,  y: 300, w: 130, coins: [] },              // spawn platform
+  { x: 20,  y: 410, w: 170, coins: [0.85] },
+  { x: 190, y: 250, w: 130, coins: [0.8] },
+  { x: 330, y: 355, w: 150, coins: [0.15] },
+  { x: 280, y: 445, w: 170, coins: [0.85] },
+  { x: 470, y: 200, w: 110, coins: [0.8] },
+  { x: 610, y: 145, w: 90,  coins: [0.6] },
+  { x: 560, y: 355, w: 210, coins: [0.3, 0.85] },
+  { x: 560, y: 430, w: 150, coins: [0.2] },
 ];
 
 /* Draw a character-grid into a Phaser canvas texture, one fillRect per pixel. */
@@ -559,55 +560,21 @@ class GameScene extends Phaser.Scene {
   buildLayout() {
     this.clearLayout();
 
-    const platformRects = [];   // {x, y, w} for every platform placed, main + bonus
-
-    // --- main path: guaranteed-traversable left-to-right spine ---
-    let x = 8;
-    let topY = 410;
-    let first = true;
-
-    while (x < 770) {
-      let w = first ? 132 : Phaser.Math.RND.pick(CONFIG.PLATFORM_WIDTHS);
-
-      if (!first) {
-        const step = Phaser.Math.Between(-CONFIG.MAX_STEP, CONFIG.MAX_STEP);
-        topY = Phaser.Math.Clamp(topY + step, CONFIG.MIN_TOP_Y, CONFIG.MAX_TOP_Y);
-      } else {
-        topY = 410;
-      }
-      if (x + w > 792) w = Math.max(60, 792 - x);
-
-      this.makePlatform(x, topY, w);
-      platformRects.push({ x, y: topY, w });
-
-      if (first) {
-        this.spawnX = x + 26;
-        this.spawnY = topY - 46;
-      }
-
-      const gap = first
-        ? Phaser.Math.Between(56, 92)
-        : Phaser.Math.Between(CONFIG.MIN_GAP, CONFIG.MAX_GAP);
-
-      x += w + gap;
-      first = false;
-    }
-
-    // --- bonus platforms stacked above/below the main path ---
-    platformRects.slice().forEach((base) => {
-      for (let i = 0; i < CONFIG.SAT_TRIES_PER_SIDE; i++) {
-        if (Math.random() < CONFIG.SAT_ABOVE_CHANCE) this.tryAddSatellite(platformRects, base, "above");
-        if (Math.random() < CONFIG.SAT_BELOW_CHANCE) this.tryAddSatellite(platformRects, base, "below");
+    // --- fixed rooftop layout (see LEVEL_LAYOUT) ---
+    LEVEL_LAYOUT.forEach((p) => {
+      this.makePlatform(p.x, p.y, p.w);
+      if (p.coins.length === 0) {
+        this.spawnX = p.x + 26;
+        this.spawnY = p.y - 46;
       }
     });
 
-    // --- coin slots: only ever on a platform, at most 2 per platform ---
+    // --- coin slots: only ever on a platform, positions from LEVEL_LAYOUT ---
     const slotDefs = [];
-    platformRects.forEach((r) => {
-      const n = Phaser.Math.Between(1, 2);
-      for (let i = 0; i < n; i++) {
-        slotDefs.push({ x: r.x + (r.w * (i + 1)) / (n + 1), y: r.y - 16 });
-      }
+    LEVEL_LAYOUT.forEach((p) => {
+      p.coins.forEach((frac) => {
+        slotDefs.push({ x: p.x + frac * p.w, y: p.y - 16 });
+      });
     });
 
     this.coinSlots = slotDefs.map((d) => ({
@@ -656,48 +623,6 @@ class GameScene extends Phaser.Scene {
   canLandOnPlatform(player, platform) {
     const body = player.body;
     return body.velocity.y >= 0 && (body.prev.y + body.height) <= platform.body.top + 2;
-  }
-
-  /* Try to place one bonus platform near `base`: "above" is reached by
-     jumping straight up through it (one-way) and landing on top; "below" is
-     reached by simply walking off `base`'s edge and dropping onto it. Skips
-     silently if no clear spot is found nearby after a few tries.
-     "above" platforms are kept narrower and centred close over `base` (small
-     jitter) so walking off either edge still drops you back onto `base`
-     rather than overhanging past it into open air. */
-  tryAddSatellite(platformRects, base, side) {
-    const baseCenterX = base.x + base.w / 2;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const w = side === "above"
-        ? Phaser.Math.RND.pick(CONFIG.SAT_ABOVE_WIDTHS)
-        : Phaser.Math.RND.pick(CONFIG.PLATFORM_WIDTHS);
-      const jitter = side === "above" ? CONFIG.SAT_ABOVE_JITTER : CONFIG.SAT_BELOW_JITTER;
-      const centerX = baseCenterX + Phaser.Math.Between(-jitter, jitter);
-      const x = Phaser.Math.Clamp(centerX - w / 2, 8, 792 - w);
-      const dy = side === "above"
-        ? Phaser.Math.Between(CONFIG.SAT_ABOVE_MIN, CONFIG.SAT_ABOVE_MAX)
-        : Phaser.Math.Between(CONFIG.SAT_BELOW_MIN, CONFIG.SAT_BELOW_MAX);
-      const y = Phaser.Math.Clamp(
-        side === "above" ? base.y - dy : base.y + dy,
-        CONFIG.SAT_MIN_TOP_Y, CONFIG.SAT_MAX_TOP_Y
-      );
-      const rect = { x, y, w };
-
-      if (platformRects.some((r) => this.rectsTooClose(rect, r))) continue;
-
-      this.makePlatform(x, y, w);
-      platformRects.push(rect);
-      return true;
-    }
-    return false;
-  }
-
-  rectsTooClose(a, b) {
-    const mx = CONFIG.PLATFORM_MARGIN_X, my = CONFIG.PLATFORM_MARGIN_Y, th = CONFIG.TILE_H;
-    return !(
-      a.x + a.w + mx <= b.x || b.x + b.w + mx <= a.x ||
-      a.y + th + my <= b.y || b.y + th + my <= a.y
-    );
   }
 
   /* Give every slot a coin at level start, guaranteeing all 4 types appear
