@@ -111,7 +111,7 @@
     <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
     <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
-  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 12</footer>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 13</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
@@ -303,10 +303,31 @@ const LEDGE = [
   "dddddddddddddddd",
 ];
 
+// Exit door (a neon portal) -- 10 x 15. Palette: k outline, f frame, d dark
+// doorway, g glowing core. Revealed once every coin target is met.
+const DOOR = [
+  "..kkkkkk..",
+  ".kffffffk.",
+  "kfddddddfk",
+  "kfdggggdfk",
+  "kfdggggdfk",
+  "kfdggggdfk",
+  "kfdggggdfk",
+  "kfdggggdfk",
+  "kfdggggdfk",
+  "kfdggggdfk",
+  "kfdggggdfk",
+  "kfdggggdfk",
+  "kfddddddfk",
+  ".kffffffk.",
+  "..kkkkkk..",
+];
+
 const PALETTES = {
   runner: { k:"#1a0a24", h:"#6a2fb5", s:"#ffd9b0", j:"#ff3ea5", p:"#28e0d0", b:"#3a2a5a" },
   bat:    { k:"#241033", w:"#ff4d5e" },
   ledge:  { g:"#48f2c2", d:"#241a3d", w:"#ffd27a" },
+  door:   { k:"#1a0a24", f:"#48f2c2", d:"#1c0f2e", g:"#ff3ea5" },
 };
 
 /* The four collectible coin types. `target` is the EXACT count of that coin
@@ -438,6 +459,7 @@ class GameScene extends Phaser.Scene {
     drawSprite(this, "bat_a",       BAT_A,       PALETTES.bat);
     drawSprite(this, "bat_b",       BAT_B,       PALETTES.bat);
     drawSprite(this, "ledge",       LEDGE,       PALETTES.ledge);
+    drawSprite(this, "door",        DOOR,        PALETTES.door);
     COIN_TYPES.forEach((t) => drawSprite(this, t.key, t.grid, t.palette));
 
     this.anims.create({ key: "run",  frames: [{ key: "runner_a" }, { key: "runner_b" }], frameRate: 9, repeat: -1 });
@@ -458,6 +480,15 @@ class GameScene extends Phaser.Scene {
     this.physics.add.collider(this.player, this.platforms, null, this.canLandOnPlatform, this);
     this.physics.add.overlap(this.player, this.coins, this.onCoin, null, this);
     this.physics.add.overlap(this.player, this.bats,  this.onBat,  null, this);
+
+    // --- exit door: hidden until every coin colour hits its secret target,
+    // then revealed on the top-right-most platform -- walking into it clears
+    // the level. Created once here and repositioned/shown in buildLayout(). ---
+    this.door = this.physics.add.sprite(0, 0, "door").setDepth(7).setVisible(false);
+    this.door.body.setAllowGravity(false);
+    this.door.body.setImmovable(true);
+    this.door.body.enable = false;
+    this.physics.add.overlap(this.player, this.door, this.onDoorReached, null, this);
 
     // --- input (captured so the page never scrolls) ---
     this.k = this.input.keyboard.addKeys({
@@ -529,6 +560,12 @@ class GameScene extends Phaser.Scene {
       }).setOrigin(0, 0.5).setDepth(60).setResolution(2);
     });
 
+    // --- door hint banner (shown once every coin target is met; doesn't
+    // freeze play -- the player just keeps running to reach the door) ---
+    this.doorHint = this.add.text(CONFIG.WIDTH / 2, 80, "ALL COINS COLLECTED -- GET TO THE DOOR!", {
+      fontFamily: "monospace", fontSize: "13px", color: "#6dff6d", fontStyle: "bold",
+    }).setOrigin(0.5, 0).setDepth(60).setResolution(2).setStroke("#1a0a24", 4).setVisible(false);
+
     // --- overlay (title / game over / level clear) ---
     this.ovBg = this.add.rectangle(CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2, CONFIG.WIDTH, CONFIG.HEIGHT, 0x0a0713, 0.78).setDepth(70);
     this.ovTitle = this.add.text(CONFIG.WIDTH / 2, 178, "", {
@@ -589,6 +626,27 @@ class GameScene extends Phaser.Scene {
         this.spawnX = p.x + 26;
         this.spawnY = p.y - 46;
       }
+    });
+
+    // --- exit door: sits on the top-right-most platform (lowest y, then
+    // highest right edge as a tie-break), hidden until every coin colour
+    // hits its target -- see openDoor(). Reset here so a restart starts
+    // with it hidden and the pulse tween (killed by clearLayout) restarted. ---
+    const doorPlatform = LEVEL_LAYOUT.reduce((best, p) => {
+      if (!best) return p;
+      if (p.y < best.y) return p;
+      if (p.y === best.y && (p.x + p.w) > (best.x + best.w)) return p;
+      return best;
+    }, null);
+    this.door.setOrigin(0.5, 1);
+    this.door.body.reset(doorPlatform.x + doorPlatform.w - 20, doorPlatform.y);
+    this.door.setVisible(false);
+    this.door.body.enable = false;
+    this.doorActive = false;
+    this.doorHint.setVisible(false);
+    this.tweens.add({
+      targets: this.door, scaleX: 1.08, scaleY: 1.08,
+      duration: 650, yoyo: true, repeat: -1, ease: "Sine.InOut",
     });
 
     // --- coin slots: only ever on a platform, positions from LEVEL_LAYOUT ---
@@ -893,7 +951,7 @@ class GameScene extends Phaser.Scene {
     this.updateHud();
 
     if (COIN_TYPES.every((t, i) => this.collected[i] === t.target)) {
-      this.levelClear();
+      this.openDoor();
     }
   }
 
@@ -901,6 +959,29 @@ class GameScene extends Phaser.Scene {
     if (this.gameState !== "playing") return;
     if (this.time.now < this.invulnUntil) return;
     this.loseLife(false);
+  }
+
+  /* Every coin colour is at its secret target: clear whatever's left on the
+     board (no more coins to chase) and reveal the exit door. The level
+     itself isn't cleared yet -- the player still has to physically reach
+     and walk into the door, via onDoorReached(). */
+  openDoor() {
+    if (this.doorActive) return;
+    this.doorActive = true;
+
+    this.coins.children.each((c) => this.tweens.killTweensOf(c));
+    this.coins.clear(true, true);
+    this.coinSlots.forEach((s) => { s.sprite = null; s.active = false; });
+
+    this.door.setVisible(true);
+    this.door.body.enable = true;
+    this.doorHint.setVisible(true);
+  }
+
+  onDoorReached(player, door) {
+    if (this.gameState !== "playing" || !this.doorActive) return;
+    this.doorActive = false;
+    this.levelClear();
   }
 
   /* ---- main loop -------------------------------------------------------- */
@@ -946,7 +1027,7 @@ class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (time > this.nextRespawnCheck) {
+    if (!this.doorActive && time > this.nextRespawnCheck) {
       this.nextRespawnCheck = time + 500;
       this.tickCoinRespawn();
     }
