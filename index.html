@@ -111,7 +111,7 @@
     <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
     <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
-  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 10</footer>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 11</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
@@ -511,6 +511,16 @@ class GameScene extends Phaser.Scene {
     this.add.text(10, 40, "BACKPACK", {
       fontFamily: "monospace", fontSize: "11px", color: "#c9b8e8",
     }).setDepth(60).setResolution(2);
+    // a box is drawn around a coin's icon + count once you're holding its
+    // exact secret target -- the only in-game hint that you've got it right,
+    // shown and hidden purely as a function of this.collected (see updateHud)
+    this.backpackBoxes = COIN_TYPES.map((t, i) => {
+      const ix = 116 + i * 96;
+      return this.add.rectangle(ix + 14, 50, 74, 46)
+        .setStrokeStyle(3, 0x6dff6d)
+        .setDepth(61)
+        .setVisible(false);
+    });
     this.backpackTexts = COIN_TYPES.map((t, i) => {
       const ix = 116 + i * 96;
       this.add.image(ix, 50, t.key).setDepth(60).setScale(1.6);
@@ -745,6 +755,9 @@ class GameScene extends Phaser.Scene {
     );
     if (this.backpackTexts && this.collected) {
       this.backpackTexts.forEach((t, i) => t.setText(String(this.collected[i])));
+    }
+    if (this.backpackBoxes && this.collected) {
+      this.backpackBoxes.forEach((b, i) => b.setVisible(this.collected[i] === COIN_TYPES[i].target));
     }
   }
 
