@@ -111,7 +111,7 @@
     <button type="button" class="tc-btn tc-start" id="btnStart" aria-label="Start or restart">START</button>
     <button type="button" class="tc-btn tc-jump" id="btnJump" aria-label="Jump">JUMP</button>
   </div>
-  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 11</footer>
+  <footer>Phaser 3 &bull; all art drawn in code at runtime &bull; build 12</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
@@ -692,11 +692,11 @@ class GameScene extends Phaser.Scene {
 
     const now = this.time.now;
     const px = this.player.x, py = this.player.y;
-    const isCooled = (s) => !s.active && (now - s.collectedAt) >= CONFIG.COIN_RESPAWN_MS;
+    const isCooled = (s) => (now - s.collectedAt) >= CONFIG.COIN_RESPAWN_MS;
     const isFarEnough = (s) => Phaser.Math.Distance.Between(px, py, s.x, s.y) >= CONFIG.COIN_RESPAWN_MIN_DIST;
-    const indices = this.coinSlots.map((_, i) => i);
+    const inactive = this.coinSlots.map((_, i) => i).filter((i) => !this.coinSlots[i].active);
 
-    const eligible = indices.filter((i) => isCooled(this.coinSlots[i]) && isFarEnough(this.coinSlots[i]));
+    const eligible = inactive.filter((i) => isCooled(this.coinSlots[i]) && isFarEnough(this.coinSlots[i]));
     if (eligible.length > 0) {
       const slotIndex = Phaser.Utils.Array.GetRandom(eligible);
       const typeIndex = missingTypes.length > 0
@@ -707,12 +707,16 @@ class GameScene extends Phaser.Scene {
     }
 
     // No slot is both cooled down and far from the player. Only spawn
-    // anyway if a colour is completely missing from the board, and even
-    // then prefer a cooled-down slot over a totally fresh one.
+    // anyway if a colour is completely missing from the board. Distance
+    // is relaxed ONLY after cooldown, and never dropped entirely -- a coin
+    // must never reappear right next to/under the player, since that's
+    // exactly what happens the instant you collect the last of a colour
+    // (that slot is the only "missing" one and you're standing on it).
     if (missingTypes.length === 0) return;
 
-    const cooled = indices.filter((i) => isCooled(this.coinSlots[i]));
-    const pool = cooled.length > 0 ? cooled : indices.filter((i) => !this.coinSlots[i].active);
+    const far = inactive.filter((i) => isFarEnough(this.coinSlots[i]));
+    const cooled = inactive.filter((i) => isCooled(this.coinSlots[i]));
+    const pool = far.length > 0 ? far : cooled;
     if (pool.length === 0) return;
 
     const slotIndex = Phaser.Utils.Array.GetRandom(pool);
